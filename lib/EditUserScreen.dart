@@ -46,7 +46,7 @@ class _EditUserScreenState extends State<EditUserScreen> {
     _plateNumberController.text = data['plate_number'] ?? '';
     _vehicleModelController.text = data['vehicle_model'] ?? '';
     _vehicleTypeController.text = data['vehicle_type'] ?? '';
-    _emailController.text = data['email'] ?? '';
+    _emailController.text = data['email'] ?? data['name'] ?? ''; // Use name as email if email is not available
   }
 
   Future<void> _fetchUserProfile(String name) async {
@@ -75,17 +75,20 @@ class _EditUserScreenState extends State<EditUserScreen> {
     if (!_formKey.currentState!.validate()) return;
     setState(() => _isLoading = true);
 
+    // Use email as the name (username) for login
+    final name = _emailController.text.trim();
+
     final response = await http.post(
       Uri.parse('https://appfinity.vercel.app/profile/update'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({
-        'name': widget.user?['name'] ?? _fullNameController.text,
+        'name': name, // Use email as the name/username
         'full_name': _fullNameController.text,
         'id_number': _idNumberController.text,
         'plate_number': _plateNumberController.text,
         'vehicle_model': _vehicleModelController.text,
         'vehicle_type': _vehicleTypeController.text,
-        'email': _emailController.text,
+        'email': name, // Email is the same as name
       }),
     );
 
@@ -179,7 +182,7 @@ class _EditUserScreenState extends State<EditUserScreen> {
                         SizedBox(height: 12),
                         _buildTextField('Vehicle Type', _vehicleTypeController, Icons.directions_bus),
                         SizedBox(height: 12),
-                        _buildTextField('Email', _emailController, Icons.email),
+                        _buildEmailField('Email (Username)', _emailController, Icons.email),
 
                         SizedBox(height: 24),
                         _isLoading
@@ -243,6 +246,42 @@ class _EditUserScreenState extends State<EditUserScreen> {
         contentPadding: EdgeInsets.symmetric(vertical: 16, horizontal: 16),
       ),
       validator: (value) => value!.isEmpty ? 'Enter $label' : null,
+    );
+  }
+
+  Widget _buildEmailField(String label, TextEditingController controller, IconData icon) {
+    return TextFormField(
+      controller: controller,
+      keyboardType: TextInputType.emailAddress,
+      style: TextStyle(color: Colors.black),
+      decoration: InputDecoration(
+        prefixIcon: Icon(icon, color: Color(0xFF4CC7D3)),
+        labelText: label,
+        labelStyle: TextStyle(color: Colors.black54),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide(color: Colors.grey),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide(color: Color(0xFF49C6DC), width: 2),
+        ),
+        filled: true,
+        fillColor: Colors.white,
+        contentPadding: EdgeInsets.symmetric(vertical: 16, horizontal: 16),
+      ),
+      validator: (value) {
+        if (value == null || value.isEmpty) {
+          return 'Please enter an email';
+        }
+        if (!RegExp(r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$').hasMatch(value)) {
+          return 'Please enter a valid email';
+        }
+        return null;
+      },
     );
   }
 }

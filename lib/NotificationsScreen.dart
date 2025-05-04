@@ -33,48 +33,127 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     );
   }
 
-  String formatTimestamp(dynamic timestamp) {
-    try {
-      // If it's a string, parse it
-      if (timestamp is String) {
-        final dateTime = DateTime.parse(timestamp);
-        return _formatDateTime(dateTime);
-      }
-
-      // If it's already a DateTime object, format directly
-      if (timestamp is DateTime) {
-        return _formatDateTime(timestamp);
-      }
-
-      // Handle other cases, e.g., if it's a numeric timestamp (milliseconds since epoch)
-      if (timestamp is int) {
-        final dateTime = DateTime.fromMillisecondsSinceEpoch(timestamp);
-        return _formatDateTime(dateTime);
-      }
-
-      return 'Invalid date';
-    } catch (e) {
-      return 'Invalid date';
-    }
-  }
-
   String _formatDateTime(DateTime dateTime) {
     final now = DateTime.now();
-    final difference = now.difference(dateTime);
+    final difference = now.difference(dateTime.toLocal());
 
     if (difference.inSeconds < 60) {
-      return '${difference.inSeconds}s ago';
+      return '${difference.inSeconds} sec ago';
     } else if (difference.inMinutes < 60) {
-      return '${difference.inMinutes}m ago';
+      return '${difference.inMinutes} min ago';
     } else if (difference.inHours < 24) {
-      return '${difference.inHours}h ago';
+      return '${difference.inHours} hr ago';
+    } else if (difference.inDays < 7) {
+      return '${difference.inDays} day${difference.inDays == 1 ? '' : 's'} ago';
+    } else if (difference.inDays < 30) {
+      final weeks = (difference.inDays / 7).floor();
+      return '$weeks week${weeks == 1 ? '' : 's'} ago';
+    } else if (difference.inDays < 365) {
+      final months = (difference.inDays / 30).floor();
+      return '$months month${months == 1 ? '' : 's'} ago';
     } else {
-      return '${dateTime.month}/${dateTime.day}/${dateTime.year}';
+      return DateFormat('MMM d, y').format(dateTime);
     }
   }
 
+  String formatTimestamp(dynamic timestamp) {
+    try {
+      if (timestamp == null) return 'Just now';
+
+      DateTime? parsedDateTime;
+
+      // If it's already a DateTime object
+      if (timestamp is DateTime) {
+        parsedDateTime = timestamp;
+      }
+      // Handle string timestamps
+      else if (timestamp is String) {
+        // First try parsing HTTP date format (e.g. "Wed, 16 Apr 2025 15:48:31 GMT")
+        try {
+          parsedDateTime = _parseHttpDate(timestamp);
+        } catch (e) {
+          debugPrint('Failed to parse HTTP date: $timestamp');
+        }
+
+        // Try ISO format if HTTP format failed
+        if (parsedDateTime == null) {
+          // Try parsing as UTC by adding 'Z' if not present
+          String normalizedTimestamp = timestamp;
+          if (!timestamp.endsWith('Z')) {
+            normalizedTimestamp += 'Z';
+          }
+          parsedDateTime = DateTime.tryParse(normalizedTimestamp);
+        }
+
+        // Try SQL datetime format if still null
+        if (parsedDateTime == null && timestamp.contains(' ')) {
+          parsedDateTime = DateFormat('yyyy-MM-dd HH:mm:ss').parse(timestamp);
+        }
+
+        // Try milliseconds since epoch
+        if (parsedDateTime == null) {
+          final milliseconds = int.tryParse(timestamp);
+          if (milliseconds != null) {
+            parsedDateTime = DateTime.fromMillisecondsSinceEpoch(milliseconds);
+          }
+        }
+
+        if (parsedDateTime == null) {
+          debugPrint('Failed to parse timestamp: $timestamp');
+          parsedDateTime = DateTime.now();
+        }
+      }
+      // Numeric timestamp
+      else if (timestamp is int) {
+        parsedDateTime = DateTime.fromMillisecondsSinceEpoch(timestamp);
+      } else {
+        debugPrint('Unknown timestamp type: ${timestamp.runtimeType}');
+        parsedDateTime = DateTime.now();
+      }
+
+      // Ensure we're working with UTC before converting to local
+      if (!parsedDateTime.isUtc) {
+        parsedDateTime = DateTime.utc(
+          parsedDateTime.year,
+          parsedDateTime.month,
+          parsedDateTime.day,
+          parsedDateTime.hour,
+          parsedDateTime.minute,
+          parsedDateTime.second,
+        );
+      }
+
+      return _formatDateTime(parsedDateTime.toLocal());
+    } catch (e) {
+      debugPrint('Error formatting timestamp: $e');
+      return _formatDateTime(DateTime.now().toLocal());
+    }
+  }
+
+  DateTime _parseHttpDate(String httpDate) {
+    // Example format: "Wed, 16 Apr 2025 15:48:31 GMT"
+    final months = {
+      'Jan': 1, 'Feb': 2, 'Mar': 3, 'Apr': 4, 'May': 5, 'Jun': 6,
+      'Jul': 7, 'Aug': 8, 'Sep': 9, 'Oct': 10, 'Nov': 11, 'Dec': 12
+    };
+
+    final parts = httpDate.split(' ');
+    if (parts.length < 6) throw FormatException('Invalid HTTP date format');
+
+    final day = int.parse(parts[1]);
+    final month = months[parts[2]] ?? 1;
+    final year = int.parse(parts[3]);
+    final timeParts = parts[4].split(':');
+    final hour = int.parse(timeParts[0]);
+    final minute = int.parse(timeParts[1]);
+    final second = int.parse(timeParts[2]);
+
+    // Create as UTC time since HTTP dates are in GMT
+    return DateTime.utc(year, month, day, hour, minute, second);
+  }
   Future<void> fetchNotifications() async {
     try {
+      setState(() => isLoading = true);
       final response = await http.get(Uri.parse('https://appfinity.vercel.app/notifications'));
 
       if (response.statusCode == 200) {
@@ -152,7 +231,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                 color: _primaryColor,
                 borderRadius: BorderRadius.circular(4),
               ),
-            ),
+            ), // ← this was missing!
             SizedBox(width: 12),
             Expanded(
               child: Column(
@@ -197,6 +276,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     );
   }
 
+
   Future<void> addNotification(String message, String status) async {
     try {
       final uniqueId = _generateUniqueId();
@@ -208,6 +288,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
           'role': 'admin',
           'status': status,
           'uniqueId': uniqueId,
+          'timestamp': DateTime.now().toIso8601String(),
         }),
       );
 

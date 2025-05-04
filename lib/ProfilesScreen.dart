@@ -449,7 +449,7 @@ class _ProfilesScreenState extends State<ProfilesScreen> with SingleTickerProvid
                             physics: NeverScrollableScrollPhysics(),
                             gridDelegate:
                             SliverGridDelegateWithFixedCrossAxisCount(
-                              crossAxisCount: 5,
+                              crossAxisCount: 4,
                               crossAxisSpacing: 10,
                               mainAxisSpacing: 10,
                               childAspectRatio: 1,

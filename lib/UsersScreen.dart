@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'UserDetailScreen.dart';
+import 'dart:async';
 
 class UsersScreen extends StatefulWidget {
   @override
@@ -13,81 +14,141 @@ class _UsersScreenState extends State<UsersScreen> {
   List<dynamic> filteredUsers = [];
   TextEditingController searchController = TextEditingController();
   bool isLoading = true;
+  bool _isDisposed = false;
+  DateTime? _lastFetchTime;
 
   @override
   void initState() {
     super.initState();
-    _fetchUsersAndProfiles();
+    _fetchUsersWithCache();
+  }
+
+  @override
+  void dispose() {
+    _isDisposed = true;
+    searchController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _fetchUsersWithCache() async {
+    // Don't fetch if data is fresh (within last 30 seconds)
+    if (_lastFetchTime != null &&
+        DateTime.now().difference(_lastFetchTime!) < Duration(seconds: 30)) {
+      if (!_isDisposed) setState(() => isLoading = false);
+      return;
+    }
+
+    await _fetchUsersAndProfiles();
   }
 
   Future<void> _fetchUsersAndProfiles() async {
-    setState(() => isLoading = true);
+    if (!_isDisposed) setState(() => isLoading = true);
+
     try {
-      final usersResponse = await http.get(Uri.parse('https://appfinity.vercel.app/users'));
+      // 1. First fetch users with a timeout
+      final usersResponse = await http.get(
+          Uri.parse('https://appfinity.vercel.app/users')
+      ).timeout(Duration(seconds: 15));
 
       if (usersResponse.statusCode == 200) {
         final responseData = jsonDecode(usersResponse.body);
-
-        // Handle both cases where response might be a List or a Map
         List<dynamic> usersList = [];
+
+        // Handle response data parsing
         if (responseData is List) {
           usersList = responseData;
         } else if (responseData is Map) {
-          // Check if there's a 'users' or 'data' field that contains the list
           if (responseData.containsKey('users')) {
             usersList = responseData['users'] is List ? responseData['users'] : [];
           } else if (responseData.containsKey('data')) {
             usersList = responseData['data'] is List ? responseData['data'] : [];
           } else {
-            // If it's a Map but doesn't contain expected fields, use its values
             usersList = responseData.values.toList();
           }
         }
 
-        for (var user in usersList) {
-          if (user is! Map) continue; // Skip if user isn't a Map
+        // Filter out admin users
+        usersList = usersList.where((user) {
+          return user is Map && (user['role']?.toString().toLowerCase() != 'admin');
+        }).toList();
 
-          final profileResponse = await http.get(
-            Uri.parse('https://appfinity.vercel.app/profile/${Uri.encodeComponent(user['name'] ?? '')}'),
-          );
+        // 2. Optimize profile fetching - do it in parallel with rate limiting
+        await _fetchProfilesInParallel(usersList);
 
-          if (profileResponse.statusCode == 200) {
-            final profileData = jsonDecode(profileResponse.body);
-            user['profile'] = profileData;
-          } else {
-            user['profile'] = null;
-          }
+        if (!_isDisposed) {
+          setState(() {
+            users = usersList;
+            filteredUsers = usersList;
+            _lastFetchTime = DateTime.now();
+          });
         }
-
-        setState(() {
-          users = usersList;
-          filteredUsers = usersList;
-        });
       } else {
         _showError('Failed to fetch users (Status: ${usersResponse.statusCode})');
       }
+    } on http.ClientException catch (e) {
+      _showError('Network error: ${e.message}');
+    } on TimeoutException {
+      _showError('Request timed out. Please try again.');
     } catch (e) {
-      _showError('Error: ${e.toString()}');
+      _showError('An error occurred: ${e.toString()}');
     }
 
-    setState(() => isLoading = false);
+    if (!_isDisposed) setState(() => isLoading = false);
+  }
+
+  Future<void> _fetchProfilesInParallel(List<dynamic> usersList) async {
+    // Rate limiting - process 5 at a time to avoid overwhelming the server
+    const batchSize = 5;
+    for (var i = 0; i < usersList.length; i += batchSize) {
+      final batch = usersList.sublist(
+          i,
+          i + batchSize > usersList.length ? usersList.length : i + batchSize
+      );
+
+      await Future.wait(batch.map((user) async {
+        if (user is! Map) return;
+
+        try {
+          final profileResponse = await http.get(
+              Uri.parse('https://appfinity.vercel.app/profile/${Uri.encodeComponent(user['name'] ?? '')}')
+          ).timeout(Duration(seconds: 10));
+
+          if (profileResponse.statusCode == 200) {
+            user['profile'] = jsonDecode(profileResponse.body);
+          } else {
+            user['profile'] = null;
+          }
+        } catch (e) {
+          // Silently fail for individual profile fetches
+          user['profile'] = null;
+        }
+      }));
+    }
   }
 
   void _filterUsers(String query) {
-    setState(() {
-      filteredUsers = users.where((user) {
-        final name = user['name']?.toString().toLowerCase() ?? '';
-        final rfid = user['rfid']?.toString().toLowerCase() ?? '';
-        return name.contains(query.toLowerCase()) ||
-            rfid.contains(query.toLowerCase());
-      }).toList();
-    });
+    if (!_isDisposed) {
+      setState(() {
+        filteredUsers = users.where((user) {
+          final name = user['name']?.toString().toLowerCase() ?? '';
+          final rfid = user['rfid']?.toString().toLowerCase() ?? '';
+          return name.contains(query.toLowerCase()) ||
+              rfid.contains(query.toLowerCase());
+        }).toList();
+      });
+    }
   }
 
   void _showError(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message), backgroundColor: Colors.red),
-    );
+    if (!_isDisposed) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(message),
+          backgroundColor: Colors.red,
+          duration: Duration(seconds: 4),
+        ),
+      );
+    }
   }
 
   @override
@@ -118,7 +179,7 @@ class _UsersScreenState extends State<UsersScreen> {
                   filled: true,
                   fillColor: Colors.white,
                   labelText: 'Search User',
-                  labelStyle: TextStyle(color: Colors.black54), // Darker label
+                  labelStyle: TextStyle(color: Colors.black54),
                   prefixIcon: Icon(Icons.search, color: Colors.black54),
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(30),
@@ -126,23 +187,35 @@ class _UsersScreenState extends State<UsersScreen> {
                   ),
                   contentPadding: EdgeInsets.symmetric(vertical: 15),
                 ),
-                style: TextStyle(color: Colors.black), // Black text for input
+                style: TextStyle(color: Colors.black),
                 onChanged: _filterUsers,
               ),
             ),
             SizedBox(height: 10),
             Expanded(
               child: isLoading
-                  ? Center(child: CircularProgressIndicator())
+                  ? Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    CircularProgressIndicator(),
+                    SizedBox(height: 16),
+                    Text(
+                      'Loading users...',
+                      style: TextStyle(color: Colors.black54),
+                    ),
+                  ],
+                ),
+              )
                   : filteredUsers.isEmpty
                   ? Center(
                 child: Text(
                   'No users found.',
-                  style: TextStyle(color: Colors.black), // Black text
+                  style: TextStyle(color: Colors.black),
                 ),
               )
                   : RefreshIndicator(
-                onRefresh: _fetchUsersAndProfiles,
+                onRefresh: _fetchUsersWithCache,
                 child: ListView.builder(
                   padding: EdgeInsets.all(10),
                   itemCount: filteredUsers.length,
@@ -150,13 +223,17 @@ class _UsersScreenState extends State<UsersScreen> {
                     final user = filteredUsers[index];
                     final profile = user['profile'] ?? {};
                     final userName = user['name'] ?? 'Unnamed';
-                    final firstLetter = userName.isNotEmpty ? userName[0].toUpperCase() : '?';
+                    final firstLetter = userName.isNotEmpty
+                        ? userName[0].toUpperCase()
+                        : '?';
 
                     return Card(
                       color: Colors.white,
                       shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(12)),
                       elevation: 6,
+                      margin: EdgeInsets.symmetric(
+                          vertical: 4, horizontal: 8),
                       child: ListTile(
                         onTap: () async {
                           final updated = await Navigator.push(
@@ -167,11 +244,12 @@ class _UsersScreenState extends State<UsersScreen> {
                             ),
                           );
                           if (updated == true) {
-                            _fetchUsersAndProfiles();
+                            _fetchUsersWithCache();
                           }
                         },
                         leading: CircleAvatar(
-                          backgroundColor: Color(0xFF71BFDC).withOpacity(0.7),
+                          backgroundColor:
+                          Color(0xFF71BFDC).withOpacity(0.7),
                           backgroundImage: profile['image'] != null
                               ? NetworkImage(profile['image'])
                               : null,
@@ -187,17 +265,18 @@ class _UsersScreenState extends State<UsersScreen> {
                         title: Text(
                           userName,
                           style: TextStyle(
-                            color: Colors.black, // Black text for name
+                            color: Colors.black,
                             fontWeight: FontWeight.bold,
                           ),
                         ),
                         subtitle: Text(
                           'RFID: ${user['rfid'] ?? "N/A"}',
-                          style: TextStyle(color: Colors.black87), // Dark text
+                          style: TextStyle(color: Colors.black87),
                         ),
                         trailing: Icon(
                           Icons.arrow_forward_ios,
-                          color: Colors.black54, // Darker icon
+                          color: Colors.black54,
+                          size: 16,
                         ),
                       ),
                     );

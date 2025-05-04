@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'dart:developer' as developer;
+import 'dart:io';
 
 class ContactUsScreen extends StatefulWidget {
   @override
@@ -133,6 +134,15 @@ class _ContactUsScreenState extends State<ContactUsScreen> {
         headers: {'Accept': 'application/json'},
       );
 
+      if (response.statusCode == 404) {
+        // No messages found for this user - not an error case
+        setState(() {
+          userMessages[name] = [];
+          _statusMessage = 'No conversation history with this user';
+        });
+        return;
+      }
+
       if (response.statusCode != 200) {
         throw Exception('Request failed with status: ${response.statusCode}');
       }
@@ -150,9 +160,14 @@ class _ContactUsScreenState extends State<ContactUsScreen> {
         userMessages[name] = messageList;
       });
     } catch (e) {
-      developer.log('Error fetching messages for $name', error: e);
+      // Only show error message if it's not a 404
+      if (!e.toString().contains('404')) {
+        developer.log('Error fetching messages for $name', error: e);
+        setState(() {
+          _statusMessage = 'Error: ${e.toString().replaceAll('Exception: ', '')}';
+        });
+      }
       setState(() {
-        _statusMessage = 'Error: ${e.toString().replaceAll('Exception: ', '')}';
         userMessages[name] = [];
       });
     } finally {
@@ -186,7 +201,7 @@ class _ContactUsScreenState extends State<ContactUsScreen> {
         'name': userName,
         'email': userEmail,
         'receiver': userName,
-        'sender': 'Admin', // Changed from _nameController.text to 'Admin'
+        'sender': 'Admin',
         'status': 'sent',
         'type': 'text',
       };
@@ -273,6 +288,21 @@ class _ContactUsScreenState extends State<ContactUsScreen> {
                       elevation: 0,
                       centerTitle: true,
                       iconTheme: IconThemeData(color: Colors.white),
+                      actions: [
+                        IconButton(
+                          icon: Icon(Icons.refresh, color: Colors.white),
+                          onPressed: () async {
+                            setState(() {
+                              _isFetchingMessages = true;
+                            });
+                            await fetchMessagesForUser(userName);
+                            setState(() {
+                              _isFetchingMessages = false;
+                            });
+                          },
+                        ),
+                      ],
+
                     ),
                     if (_isFetchingMessages)
                       Expanded(
@@ -304,66 +334,74 @@ class _ContactUsScreenState extends State<ContactUsScreen> {
                       )
                     else
                       Expanded(
-                        child: ListView.builder(
-                          padding: EdgeInsets.all(8),
-                          itemCount: userMessages[userName]?.length ?? 0,
-                          itemBuilder: (context, index) {
-                            final message = userMessages[userName]![index];
-                            final isCurrentUser = message['sender'] == 'Admin'; // Changed from _nameController.text to 'Admin'
-
-                            return Container(
-                              margin: EdgeInsets.symmetric(vertical: 4),
-                              padding: EdgeInsets.all(12),
-                              decoration: BoxDecoration(
-                                color: isCurrentUser
-                                    ? _primaryColor.withOpacity(0.1)
-                                    : Colors.white,
-                                borderRadius: BorderRadius.circular(8),
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: Colors.black12,
-                                    blurRadius: 2,
-                                    offset: Offset(0, 1),
-                                  ),
-                                ],
-                              ),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Row(
-                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                    children: [
-                                      Text(
-                                        message['sender'] ?? 'Unknown',
-                                        style: TextStyle(
-                                          fontWeight: FontWeight.bold,
-                                          color: isCurrentUser
-                                              ? _primaryColor
-                                              : Colors.black,
-                                        ),
-                                      ),
-                                      Text(
-                                        message['timestamp'] ?? message['createdAt'] ?? '',
-                                        style: TextStyle(
-                                          fontSize: 12,
-                                          color: Colors.grey,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                  SizedBox(height: 8),
-                                  Text(
-                                    message['message'] ?? '',
-                                    style: TextStyle(
-                                      color: isCurrentUser
-                                          ? Colors.black
-                                          : Colors.black87,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            );
+                        child: RefreshIndicator(
+                          onRefresh: () async {
+                            await fetchMessagesForUser(userName);
                           },
+                          child: ListView.builder(
+                            padding: EdgeInsets.all(8),
+                            itemCount: userMessages[userName]?.length ?? 0,
+                            itemBuilder: (context, index) {
+                              final message = userMessages[userName]![index];
+                              final isCurrentUser = message['sender'] == 'Admin';
+                              final timestamp = formatTimestamp(
+                                message['timestamp'] ?? message['createdAt'] ?? '',
+                              );
+
+                              return Container(
+                                margin: EdgeInsets.symmetric(vertical: 4),
+                                padding: EdgeInsets.all(12),
+                                decoration: BoxDecoration(
+                                  color: isCurrentUser
+                                      ? _primaryColor.withOpacity(0.1)
+                                      : Colors.white,
+                                  borderRadius: BorderRadius.circular(8),
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: Colors.black12,
+                                      blurRadius: 2,
+                                      offset: Offset(0, 1),
+                                    ),
+                                  ],
+                                ),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                      children: [
+                                        Text(
+                                          message['sender'] ?? 'Unknown',
+                                          style: TextStyle(
+                                            fontWeight: FontWeight.bold,
+                                            color: isCurrentUser
+                                                ? _primaryColor
+                                                : Colors.black,
+                                          ),
+                                        ),
+                                        Text(
+                                          timestamp,
+                                          style: TextStyle(
+                                            fontSize: 12,
+                                            color: Colors.grey,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    SizedBox(height: 8),
+                                    Text(
+                                      message['message'] ?? '',
+                                      style: TextStyle(
+                                        color: isCurrentUser
+                                            ? Colors.black
+                                            : Colors.black87,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              );
+                            },
+                          ),
                         ),
                       ),
                     Divider(height: 1),
@@ -445,6 +483,26 @@ class _ContactUsScreenState extends State<ContactUsScreen> {
     );
   }
 
+  String formatTimestamp(String timestamp) {
+    try {
+      // Parse RFC 1123 date string like "Mon, 14 Apr 2025 14:50:13 GMT"
+      DateTime dateTime = HttpDate.parse(timestamp);
+
+      // Convert to local time
+      dateTime = dateTime.toLocal();
+
+      // Format to: DD-MM-YYYY HH:MM
+      return '${dateTime.day.toString().padLeft(2, '0')}-'
+          '${dateTime.month.toString().padLeft(2, '0')}-'
+          '${dateTime.year} '
+          '${dateTime.hour.toString().padLeft(2, '0')}:'
+          '${dateTime.minute.toString().padLeft(2, '0')}';
+    } catch (e) {
+      developer.log('Error parsing timestamp "$timestamp": $e');
+      return timestamp;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -491,7 +549,7 @@ class _ContactUsScreenState extends State<ContactUsScreen> {
                     SizedBox(height: 20),
                     TextField(
                       controller: _searchController,
-                      style: TextStyle(color: Colors.black), // Set typed text color to black
+                      style: TextStyle(color: Colors.black),
                       decoration: InputDecoration(
                         labelText: 'Search Users',
                         prefixIcon: Icon(Icons.search),

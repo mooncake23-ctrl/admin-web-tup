@@ -15,7 +15,9 @@ class _StoresScreenState extends State<StoresScreen> {
   int? selectedSlotIndex;
   final String baseUrl = 'https://appfinity.vercel.app/stores';
   final String usersUrl = 'https://appfinity.vercel.app/users';
-  final String updateAssignedSlotUrl = 'https://appfinity.vercel.app/users/update_assignedslot';
+  final String assignSlotUrl = 'https://appfinity.vercel.app/update_slot_for_entry';
+  final String unassignSlotUrl = 'https://appfinity.vercel.app/update_slot_for_exit';
+  final String updateAssignedSlotUrl = 'https://appfinity.vercel.app/update_user_slot';
 
   // Color palette
   final Color _primaryColor = Color(0xFF71BFDC);
@@ -34,7 +36,7 @@ class _StoresScreenState extends State<StoresScreen> {
     setState(() => isLoading = true);
     try {
       final response = await http.get(Uri.parse(baseUrl));
-      print("Slots API Response: ${response.body}");
+      print("Slots API Response: ${response.statusCode} - ${response.body}");
 
       if (response.statusCode == 200) {
         final List<dynamic> data = json.decode(response.body);
@@ -66,18 +68,18 @@ class _StoresScreenState extends State<StoresScreen> {
         }
       } else {
         setState(() => isLoading = false);
-        _showErrorDialog("Error ${response.statusCode}", "Failed to fetch slots.");
+        _showErrorDialog("Error ${response.statusCode}", "Failed to fetch slots. Server returned: ${response.body}");
       }
     } catch (e) {
       setState(() => isLoading = false);
-      _showErrorDialog("Exception", e.toString());
+      _showErrorDialog("Exception", "Failed to fetch slots: ${e.toString()}");
     }
   }
 
   Future<void> _fetchUsers() async {
     try {
       final response = await http.get(Uri.parse(usersUrl));
-      print("Users API Response: ${response.body}");
+      print("Users API Response: ${response.statusCode} - ${response.body}");
 
       if (response.statusCode == 200) {
         final Map<String, dynamic> responseData = json.decode(response.body);
@@ -89,6 +91,8 @@ class _StoresScreenState extends State<StoresScreen> {
             filteredUsers = List.from(users);
           });
         }
+      } else {
+        print("Failed to fetch users: ${response.statusCode} - ${response.body}");
       }
     } catch (e) {
       print("Error fetching users: $e");
@@ -113,42 +117,105 @@ class _StoresScreenState extends State<StoresScreen> {
             color: _secondaryColor,
             borderRadius: BorderRadius.vertical(top: Radius.circular(25)),
           ),
-          padding: EdgeInsets.only(
-            bottom: MediaQuery.of(context).viewInsets.bottom,
-          ),
-          child: UserSelectionSheet(
-            users: filteredUsers,
-            onSearchChanged: (query) {
-              setState(() {
-                filteredUsers = users
-                    .where((user) => user['name']
-                    .toString()
-                    .toLowerCase()
-                    .contains(query.toLowerCase()))
-                    .toList();
-              });
-            },
-            onUserSelected: (user) async {
-              Navigator.pop(context);
-              if (selectedSlotIndex != null) {
-                await _assignUserToSlot(user, selectedSlotIndex!);
-              }
-            },
-            primaryColor: _primaryColor,
-            secondaryColor: _secondaryColor,
-            textColor: _textColor,
+          child: Padding(
+            padding: EdgeInsets.only(
+              bottom: MediaQuery.of(context).viewInsets.bottom,
+            ),
+            child: UserSelectionSheet(
+              users: filteredUsers,
+              onSearchChanged: (query) {
+                setState(() {
+                  filteredUsers = users
+                      .where((user) => user['name']
+                      .toString()
+                      .toLowerCase()
+                      .contains(query.toLowerCase()))
+                      .toList();
+                });
+              },
+              onUserSelected: (user) async {
+                Navigator.pop(context);
+                if (selectedSlotIndex != null) {
+                  await _showRfidDialogForAssignment(user, selectedSlotIndex!);
+                }
+              },
+              primaryColor: _primaryColor,
+              secondaryColor: _secondaryColor,
+              textColor: _textColor,
+            ),
           ),
         );
       },
     );
   }
 
-  Future<void> _assignUserToSlot(Map<String, dynamic> user, int slotIndex) async {
+  Future<void> _showRfidDialogForAssignment(Map<String, dynamic> user, int slotIndex) async {
+    final rfidController = TextEditingController();
+    bool isSubmitting = false;
+
+    await showDialog(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setState) {
+            return AlertDialog(
+              title: Text('Enter RFID for ${user['name']}'),
+              content: TextField(
+                controller: rfidController,
+                decoration: InputDecoration(
+                  hintText: 'Enter RFID tag',
+                  border: OutlineInputBorder(),
+                ),
+                keyboardType: TextInputType.text,
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: Text('Cancel'),
+                ),
+                ElevatedButton(
+                  onPressed: isSubmitting
+                      ? null
+                      : () async {
+                    if (rfidController.text.isEmpty) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('Please enter RFID')),
+                      );
+                      return;
+                    }
+
+                    setState(() => isSubmitting = true);
+                    try {
+                      await _assignUserToSlot(user, slotIndex, rfidController.text);
+                      Navigator.pop(context);
+                    } catch (e) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('Error: ${e.toString()}')),
+                      );
+                    } finally {
+                      setState(() => isSubmitting = false);
+                    }
+                  },
+                  child: isSubmitting
+                      ? CircularProgressIndicator()
+                      : Text('Assign'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> _assignUserToSlot(Map<String, dynamic> user, int slotIndex, String rfid) async {
+    setState(() => isLoading = true);
     try {
-      await _freeUserCurrentSlot(user['name']);
-      await _freeSlotCurrentUser(slotIndex);
-      await _updateSlot(slotIndex, user['name']);
-      await _updateUserAssignedSlot(user['name'], 'slot${slots[slotIndex]['slotNumber']}');
+      // First free the user from any existing slot
+      await _freeUserCurrentSlotByRfid(rfid);
+
+      // Assign to new slot
+      await _assignSlot(rfid, slots[slotIndex]['slotNumber']);
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -156,170 +223,190 @@ class _StoresScreenState extends State<StoresScreen> {
           backgroundColor: _primaryColor,
         ),
       );
+
+      // Refresh data
+      await _fetchSlots();
     } catch (e) {
-      _showErrorDialog("Error", "Failed to assign user to slot: $e");
+      _showErrorDialog("Error", "Failed to assign user to slot: ${e.toString()}");
+    } finally {
+      setState(() => isLoading = false);
     }
   }
 
   Future<void> _unassignUserFromSlot(int slotIndex) async {
-    try {
-      final currentUser = slots[slotIndex]['occupiedBy'];
+    final rfidController = TextEditingController();
+    bool isSubmitting = false;
 
-      if (currentUser == null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Slot is already empty'),
-            backgroundColor: _primaryColor,
-          ),
-        );
-        return;
-      }
+    final currentUser = slots[slotIndex]['occupiedBy'];
 
-      bool confirm = await showDialog(
-        context: context,
-        builder: (context) {
-          return AlertDialog(
-            title: Text('Confirm Unassign'),
-            content: Text('Are you sure you want to unassign $currentUser from slot ${slots[slotIndex]['slotNumber']}?'),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context, false),
-                child: Text('Cancel'),
-              ),
-              TextButton(
-                onPressed: () => Navigator.pop(context, true),
-                child: Text('Unassign', style: TextStyle(color: Colors.red)),
-              ),
-            ],
-          );
-        },
-      );
-
-      if (confirm != true) return;
-
-      await _updateSlot(slotIndex, null);
-      await _updateUserAssignedSlot(currentUser, null);
-
+    if (currentUser == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Unassigned $currentUser from slot ${slots[slotIndex]['slotNumber']}'),
+          content: Text('Slot is already empty'),
           backgroundColor: _primaryColor,
         ),
       );
-    } catch (e) {
-      _showErrorDialog("Error", "Failed to unassign user: $e");
+      return;
     }
+
+    await showDialog(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setState) {
+            return AlertDialog(
+              title: Text('Unassign User from Slot'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Slot ${slots[slotIndex]['slotNumber']} is currently assigned to:'),
+                  SizedBox(height: 8),
+                  Text(currentUser, style: TextStyle(fontWeight: FontWeight.bold)),
+                  SizedBox(height: 16),
+                  Text('Please scan the RFID tag to confirm unassignment:'),
+                  SizedBox(height: 8),
+                  TextField(
+                    controller: rfidController,
+                    decoration: InputDecoration(
+                      hintText: 'Enter RFID tag',
+                      border: OutlineInputBorder(),
+                    ),
+                    keyboardType: TextInputType.text,
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: Text('Cancel'),
+                ),
+                ElevatedButton(
+                  onPressed: isSubmitting
+                      ? null
+                      : () async {
+                    if (rfidController.text.isEmpty) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('Please enter RFID')),
+                      );
+                      return;
+                    }
+
+                    setState(() => isSubmitting = true);
+                    try {
+                      await _unassignSlot(rfidController.text, slots[slotIndex]['slotNumber']);
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text('Unassigned $currentUser from slot ${slots[slotIndex]['slotNumber']}'),
+                          backgroundColor: _primaryColor,
+                        ),
+                      );
+                      Navigator.pop(context);
+                      await _fetchSlots();
+                    } catch (e) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('Error: ${e.toString()}')),
+                      );
+                    } finally {
+                      setState(() => isSubmitting = false);
+                    }
+                  },
+                  child: isSubmitting
+                      ? CircularProgressIndicator()
+                      : Text('Unassign', style: TextStyle(color: Colors.red)),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
   }
 
-  Future<void> _freeUserCurrentSlot(String username) async {
-    try {
-      for (int i = 0; i < slots.length; i++) {
-        if (slots[i]['occupiedBy'] == username) {
-          await _updateSlot(i, null);
-        }
-      }
-    } catch (e) {
-      print("Error freeing user's current slot: $e");
-    }
-  }
-
-  Future<void> _freeSlotCurrentUser(int slotIndex) async {
-    try {
-      final currentUser = slots[slotIndex]['occupiedBy'];
-      if (currentUser != null) {
-        await _updateUserAssignedSlot(currentUser, null);
-      }
-    } catch (e) {
-      print("Error freeing slot's current user: $e");
-    }
-  }
-
-  Future<void> _updateSlot(int index, String? user) async {
+  Future<void> _freeUserCurrentSlotByRfid(String rfid) async {
     try {
       final response = await http.post(
-        Uri.parse('$baseUrl/update-slot'),
+        Uri.parse(unassignSlotUrl),
         headers: {'Content-Type': 'application/json'},
-        body: json.encode({
-          'new_value': user ?? "available",
-          'slot': "slot${slots[index]['slotNumber']}",
-          'unique_id': "12345",
-        }),
+        body: json.encode({'rfid': rfid}),
       );
 
-      if (response.statusCode == 200) {
-        _fetchSlots();
-      } else {
-        throw Exception("Failed to update slot");
+      print("Free Slot Response: ${response.statusCode} - ${response.body}");
+
+      if (response.statusCode != 200) {
+        throw Exception("Failed to free user's current slot: ${response.body}");
       }
     } catch (e) {
-      throw Exception("Failed to update slot: $e");
+      throw Exception("Error freeing user's current slot: $e");
     }
   }
 
-  Future<void> _updateUserAssignedSlot(String username, String? slot) async {
+  Future<void> _assignSlot(String rfid, int slotNumber) async {
     try {
-      final response = await http.put(
-        Uri.parse(updateAssignedSlotUrl),
+      final response = await http.post(
+        Uri.parse('$assignSlotUrl/$rfid'), // RFID in URL path
         headers: {'Content-Type': 'application/json'},
         body: json.encode({
-          'assignedslot': slot ?? "available",
-          'name': username,
+          'slot': 'slot$slotNumber', // Slot in request body
         }),
       );
 
-      if (response.statusCode == 200) {
-        _fetchUsers();
-      } else {
-        throw Exception("Failed to update user's assigned slot");
+      print("Assign Slot Response: ${response.statusCode} - ${response.body}");
+
+      if (response.statusCode != 200) {
+        throw Exception("Failed to assign slot: ${response.body}");
       }
     } catch (e) {
-      throw Exception("Failed to update user's assigned slot: $e");
+      throw Exception("Assign slot error: $e");
+    }
+  }
+
+  Future<void> _unassignSlot(String rfid, int slotNumber) async {
+    try {
+      final response = await http.post(
+        Uri.parse('$unassignSlotUrl/$rfid'), // RFID in URL path
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({
+          'slot': 'slot$slotNumber', // Slot in request body
+        }),
+      );
+
+      print("Unassign Slot Response: ${response.statusCode} - ${response.body}");
+
+      if (response.statusCode != 200) {
+        throw Exception("Failed to unassign slot: ${response.body}");
+      }
+    } catch (e) {
+      throw Exception("Unassign slot error: $e");
     }
   }
 
   Future<void> _showErrorDialog(String title, String message) async {
-    showDialog(
+    await showDialog(
       context: context,
       builder: (context) {
-        return Dialog(
+        return AlertDialog(
           backgroundColor: _secondaryColor,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(20),
           ),
-          child: Padding(
-            padding: const EdgeInsets.all(20.0),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  title,
-                  style: TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold,
-                    color: _primaryColor,
-                  ),
-                ),
-                SizedBox(height: 15),
-                Text(
-                  message,
-                  style: TextStyle(color: _textColor),
-                  textAlign: TextAlign.center,
-                ),
-                SizedBox(height: 20),
-                ElevatedButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: Text('OK'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: _primaryColor,
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                  ),
-                ),
-              ],
+          title: Text(
+            title,
+            style: TextStyle(
+              color: _primaryColor,
+              fontWeight: FontWeight.bold,
             ),
           ),
+          content: Text(
+            message,
+            style: TextStyle(color: _textColor),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: Text('OK'),
+            ),
+          ],
         );
       },
     );
@@ -374,27 +461,7 @@ class _StoresScreenState extends State<StoresScreen> {
         onRefresh: _fetchSlots,
         child: Column(
           children: [
-            Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: ElevatedButton(
-                onPressed: () {
-                  _showSlotSelectionDialog();
-                },
-                child: Text(
-                  'Assign User to Slot',
-                  style: TextStyle(color: Colors.white),
-                ),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: _primaryColor,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  padding: EdgeInsets.symmetric(
-                      horizontal: 20, vertical: 12),
-                  minimumSize: Size(double.infinity, 50),
-                ),
-              ),
-            ),
+            // REMOVED THE ELEVATED BUTTON FROM HERE
             Expanded(
               child: ListView.builder(
                 padding: EdgeInsets.all(16),
@@ -411,7 +478,9 @@ class _StoresScreenState extends State<StoresScreen> {
                     child: InkWell(
                       borderRadius: BorderRadius.circular(15),
                       onTap: () => _selectSlot(index),
-                      onLongPress: isOccupied ? () => _unassignUserFromSlot(index) : null,
+                      onLongPress: isOccupied
+                          ? () => _unassignUserFromSlot(index)
+                          : null,
                       child: Padding(
                         padding: EdgeInsets.all(16),
                         child: Column(
@@ -460,7 +529,8 @@ class _StoresScreenState extends State<StoresScreen> {
                               Align(
                                 alignment: Alignment.centerRight,
                                 child: TextButton(
-                                  onPressed: () => _unassignUserFromSlot(index),
+                                  onPressed: () =>
+                                      _unassignUserFromSlot(index),
                                   child: Text(
                                     'Unassign',
                                     style: TextStyle(color: Colors.red),

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'dart:async';
 
 class ViolationsScreen extends StatefulWidget {
   @override
@@ -44,235 +45,266 @@ class _ViolationsScreenState extends State<ViolationsScreen> {
   Future<void> fetchViolations() async {
     try {
       setState(() => isLoading = true);
-      final response = await http.get(Uri.parse('https://appfinity.vercel.app/violations-content'));
+      final response = await http.get(
+        Uri.parse('https://appfinity.vercel.app/violations/all'),
+        headers: {'Content-Type': 'application/json'},
+      );
+
+      debugPrint('Fetch violations response: ${response.statusCode} - ${response.body}');
 
       if (response.statusCode == 200) {
-        final Map<String, dynamic> data = json.decode(response.body);
-        if (data.containsKey("violations")) {
-          setState(() {
-            violations = List.from(data["violations"]);
-            filteredViolations = List.from(violations);
-            isLoading = false;
-          });
-        } else {
-          setState(() => isLoading = false);
-        }
+        final List<dynamic> data = json.decode(response.body);
+        setState(() {
+          violations = data.map((item) {
+            return {
+              'id': item[0]?.toString(),
+              'name': item[1]?.toString(),
+              'role': item[2]?.toString(),
+              'status': item[3]?.toString(),
+              'type': item[4]?.toString(),
+              'info': item[5]?.toString(),
+              'created_at': item[6]?.toString(),
+            };
+          }).toList();
+
+          filteredViolations = violations.where((v) => v['status'] != 'resolved').toList();
+          isLoading = false;
+        });
       } else {
         setState(() => isLoading = false);
+        throw Exception('Failed to load violations: ${response.statusCode}');
       }
     } catch (e) {
       setState(() => isLoading = false);
+      _showErrorSnackbar('Error fetching violations: ${e.toString()}');
+      debugPrint('Error details: $e');
     }
   }
 
-  Future<void> addViolation(String name, String info, String role, String status, String type) async {
+  Future<void> addViolation(String name, String info, String type) async {
     try {
       final response = await http.post(
-        Uri.parse('https://appfinity.vercel.app/violations/add'),
-        headers: {'Content-Type': 'application/json'},
+        Uri.parse('https://appfinity.vercel.app/violations/rfid/add'),
+        headers: {
+          'accept': 'application/json',
+          'Content-Type': 'application/json',
+        },
         body: json.encode({
-          'name': name,
           'info': info,
-          'role': role,
-          'status': status,
-          'type': type
+          'name': name,
+          'role': 'user',
+          'status': 'pending',
+          'type': type,
         }),
       );
 
-      if (response.statusCode == 200) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Violation added successfully!'),
-            backgroundColor: _primaryColor,
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-          ),
-        );
-        await fetchViolations();
-      }
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Error adding violation!'),
-          backgroundColor: Colors.red[300],
-        ),
-      );
-    }
-  }
-
-  Future<void> deleteViolation(String name) async {
-    try {
-      final response = await http.delete(
-        Uri.parse('https://appfinity.vercel.app/violations/delete'),
-        headers: {'Content-Type': 'application/json'},
-        body: json.encode({'name': name, 'status': 'active'}),
-      );
+      debugPrint('Add violation request: ${response.request}');
+      debugPrint('Add violation response: ${response.statusCode} - ${response.body}');
 
       if (response.statusCode == 200) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Violation resolved!'),
-            backgroundColor: _primaryColor,
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-          ),
-        );
+        final responseData = json.decode(response.body);
+        _showSuccessSnackbar('Violation added successfully!');
         await fetchViolations();
       } else {
         final responseData = json.decode(response.body);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(responseData['message'] ?? 'Failed to resolve violation'),
-            backgroundColor: Colors.red[300],
-          ),
-        );
+        throw Exception(responseData['message'] ??
+            responseData['error'] ??
+            'HTTP ${response.statusCode}: ${response.reasonPhrase}');
       }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Error resolving violation!'),
-          backgroundColor: Colors.red[300],
-        ),
-      );
+      if (e.toString().contains('already exists')) {
+        _showErrorSnackbar('Violation for this user already exists');
+      } else {
+        _showErrorSnackbar('Failed to add violation: ${e.toString()}');
+      }
     }
   }
 
-  void showAddViolationDialog() {
-    final formKey = GlobalKey<FormState>();
-    TextEditingController nameController = TextEditingController();
-    TextEditingController infoController = TextEditingController();
-    String selectedRole = "user";
-    String selectedStatus = "active";
-    String selectedType = "low";
+  Future<void> resolveViolation(String name, String id) async {
+    try {
+      setState(() => isLoading = true);
 
-    showDialog(
-      context: context,
-      builder: (context) {
-        return Dialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          child: Container(
-            padding: EdgeInsets.all(20),
-            decoration: BoxDecoration(
-              color: _cardColor,
-              borderRadius: BorderRadius.circular(16),
-            ),
-            child: Form(
-              key: formKey,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    "Report Violation",
-                    style: TextStyle(
-                      fontSize: 22,
-                      fontWeight: FontWeight.bold,
-                      color: _primaryColor,
-                    ),
-                  ),
-                  SizedBox(height: 20),
-                  TextFormField(
-                    controller: nameController,
-                    decoration: InputDecoration(
-                      labelText: "Email",
-                      labelStyle: TextStyle(color: Colors.black87),
-                      hintStyle: TextStyle(color: Colors.black54),
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-                      filled: true,
-                      fillColor: Colors.grey[50],
-                    ),
-                    validator: (value) => value!.isEmpty ? 'Required' : null,
-                    style: TextStyle(color: Colors.black87),
-                  ),
-                  SizedBox(height: 12),
-                  TextFormField(
-                    controller: infoController,
-                    decoration: InputDecoration(
-                      labelText: "Violation Details",
-                      labelStyle: TextStyle(color: Colors.black87),
-                      hintStyle: TextStyle(color: Colors.black54),
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-                      filled: true,
-                      fillColor: Colors.grey[50],
-                    ),
-                    maxLines: 3,
-                    validator: (value) => value!.isEmpty ? 'Required' : null,
-                    style: TextStyle(color: Colors.black87),
-                  ),
-                  SizedBox(height: 12),
-                  DropdownButtonFormField<String>(
-                    value: selectedType,
-                    items: ['low', 'medium', 'high']
-                        .map((type) => DropdownMenuItem<String>(
-                      value: type,
-                      child: Text(
-                        type[0].toUpperCase() + type.substring(1),
-                        style: TextStyle(color: Colors.black54),
-                      ),
-                    ))
-                        .toList(),
-                    onChanged: (value) => selectedType = value!,
-                    decoration: InputDecoration(
-                      labelText: "Severity",
-                      labelStyle: TextStyle(color: Colors.black),
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-                      filled: true,
-                      fillColor: Colors.grey[100],
-                    ),
-                    style: TextStyle(color: Colors.black),
-                    dropdownColor: Colors.white,
-                  ),
-                  SizedBox(height: 20),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.end,
-                    children: [
-                      TextButton(
-                        onPressed: () => Navigator.pop(context),
-                        child: Text("Cancel", style: TextStyle(color: Colors.grey[600])),
-                      ),
-                      SizedBox(width: 8),
-                      ElevatedButton(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: _primaryColor,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                        ),
-                        onPressed: () {
-                          if (formKey.currentState!.validate()) {
-                            addViolation(
-                              nameController.text,
-                              infoController.text,
-                              selectedRole,
-                              selectedStatus,
-                              selectedType,
-                            );
-                            Navigator.pop(context);
-                          }
-                        },
-                        child: Text("Report", style: TextStyle(color: Colors.white)),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          ),
-        );
-      },
+      final resolveResponse = await http.put(
+        Uri.parse('https://appfinity.vercel.app/violations/rfid/resolve/byname'),
+        headers: {
+          'accept': 'application/json',
+          'Content-Type': 'application/json',
+        },
+        body: json.encode({
+          'name': name,
+        }),
+      ).timeout(Duration(seconds: 10));
+
+      debugPrint('Resolve violation response: ${resolveResponse.statusCode} - ${resolveResponse.body}');
+
+      if (resolveResponse.statusCode == 200) {
+        final deleteResponse = await http.delete(
+          Uri.parse('https://appfinity.vercel.app/violations/delete/$id'),
+          headers: {'accept': 'application/json'},
+        ).timeout(Duration(seconds: 10));
+
+        debugPrint('Delete violation response: ${deleteResponse.statusCode} - ${deleteResponse.body}');
+
+        if (deleteResponse.statusCode == 200) {
+          final responseData = json.decode(deleteResponse.body);
+          _showSuccessSnackbar(responseData['message'] ?? 'Violation resolved and deleted successfully!');
+          await fetchViolations();
+        } else {
+          final errorData = json.decode(deleteResponse.body);
+          throw Exception(errorData['message'] ??
+              'Failed to delete violation. Status code: ${deleteResponse.statusCode}');
+        }
+      } else {
+        final errorData = json.decode(resolveResponse.body);
+        throw Exception(errorData['message'] ??
+            'Failed to resolve violation. Status code: ${resolveResponse.statusCode}');
+      }
+    } on TimeoutException {
+      _showErrorSnackbar('Request timed out. Please check your connection.');
+    } on http.ClientException {
+      _showErrorSnackbar('Network error. Please check your connection.');
+    } catch (e) {
+      debugPrint('Error resolving/deleting violation: $e');
+      _showErrorSnackbar('Failed to process violation: ${e.toString().replaceAll('Exception: ', '')}');
+    } finally {
+      if (mounted) {
+        setState(() => isLoading = false);
+      }
+    }
+  }
+
+  void _showSuccessSnackbar(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: Colors.green,
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(10),
+        ),
+      ),
+    );
+  }
+
+  void _showErrorSnackbar(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: Colors.red,
+        behavior: SnackBarBehavior.floating,
+      ),
     );
   }
 
   Color getTypeColor(String type) {
-    switch (type) {
-      case 'high':
-        return Colors.red[400]!;
-      case 'medium':
-        return Colors.orange[400]!;
-      case 'low':
-        return Colors.green[400]!;
-      default:
-        return Colors.grey;
+    switch (type.toLowerCase()) {
+      case 'speeding': return Colors.red[400]!;
+      case 'reckless': return Colors.orange[400]!;
+      case 'unauthorized': return Colors.purple[400]!;
+      default: return Colors.grey;
     }
+  }
+
+  void showAddViolationDialog(BuildContext context) {
+    final formKey = GlobalKey<FormState>();
+    final nameController = TextEditingController();
+    final infoController = TextEditingController();
+    String selectedType = "no exit scan";
+
+    showDialog(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setState) {
+            return AlertDialog(
+              backgroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              title: const Text(
+                "Report Violation",
+                style: TextStyle(color: Colors.black),
+              ),
+              content: Form(
+                key: formKey,
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      TextFormField(
+                        controller: nameController,
+                        decoration: const InputDecoration(
+                          labelText: "Email",
+                          labelStyle: TextStyle(color: Colors.black),
+                          border: OutlineInputBorder(),
+                        ),
+                        style: const TextStyle(color: Colors.black),
+                        validator: (value) => value == null || value.isEmpty ? 'Required' : null,
+                      ),
+                      const SizedBox(height: 12),
+                      TextFormField(
+                        controller: infoController,
+                        decoration: const InputDecoration(
+                          labelText: "Violation Details",
+                          labelStyle: TextStyle(color: Colors.black),
+                          border: OutlineInputBorder(),
+                        ),
+                        style: const TextStyle(color: Colors.black),
+                        maxLines: 3,
+                        validator: (value) => value == null || value.isEmpty ? 'Required' : null,
+                      ),
+                      const SizedBox(height: 12),
+                      DropdownButtonFormField<String>(
+                        value: selectedType,
+                        items: ['no exit scan', 'reckless parking', 'unauthorized', 'other']
+                            .map((type) => DropdownMenuItem(
+                          value: type,
+                          child: Text(
+                            type[0].toUpperCase() + type.substring(1),
+                            style: const TextStyle(color: Colors.black),
+                          ),
+                        ))
+                            .toList(),
+                        onChanged: (value) {
+                          setState(() {
+                            selectedType = value!;
+                          });
+                        },
+                        decoration: const InputDecoration(
+                          labelText: "Violation Type",
+                          labelStyle: TextStyle(color: Colors.black),
+                          border: OutlineInputBorder(),
+                        ),
+                        style: const TextStyle(color: Colors.black),
+                        dropdownColor: Colors.white,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text("Cancel", style: TextStyle(color: Colors.black)),
+                ),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(backgroundColor: _primaryColor),
+                  onPressed: () async {
+                    if (formKey.currentState!.validate()) {
+                      await addViolation(
+                        nameController.text.trim(),
+                        infoController.text.trim(),
+                        selectedType,
+                      );
+                      if (context.mounted) Navigator.pop(context);
+                    }
+                  },
+                  child: const Text("Report", style: TextStyle(color: Colors.white)),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
   }
 
   @override
@@ -280,16 +312,8 @@ class _ViolationsScreenState extends State<ViolationsScreen> {
     return Scaffold(
       backgroundColor: _secondaryColor,
       appBar: AppBar(
-        title: Text(
-          'Violations',
-          style: TextStyle(
-            color: Colors.white,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
+        title: Text('Violations', style: TextStyle(color: Colors.white)),
         backgroundColor: _primaryColor,
-        elevation: 0,
-        centerTitle: true,
         actions: [
           IconButton(
             icon: Icon(Icons.refresh, color: Colors.white),
@@ -298,10 +322,9 @@ class _ViolationsScreenState extends State<ViolationsScreen> {
         ],
       ),
       floatingActionButton: FloatingActionButton(
-        onPressed: showAddViolationDialog,
+        onPressed: () => showAddViolationDialog(context),
         child: Icon(Icons.add, color: Colors.white),
         backgroundColor: _primaryColor,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       ),
       body: Column(
         children: [
@@ -309,16 +332,10 @@ class _ViolationsScreenState extends State<ViolationsScreen> {
             padding: const EdgeInsets.all(16.0),
             child: TextField(
               controller: _searchController,
-              style: TextStyle(color: Colors.black),
               decoration: InputDecoration(
-                labelText: 'Search Email',
+                labelText: 'Search',
                 prefixIcon: Icon(Icons.search),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
-                  borderSide: BorderSide(color: _primaryColor),
-                ),
-                filled: true,
-                fillColor: Colors.white,
+                border: OutlineInputBorder(),
               ),
             ),
           ),
@@ -326,128 +343,123 @@ class _ViolationsScreenState extends State<ViolationsScreen> {
             child: isLoading
                 ? Center(child: CircularProgressIndicator(color: _primaryColor))
                 : filteredViolations.isEmpty
-                ? Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.assignment_turned_in, size: 50, color: Colors.grey[400]),
-                  SizedBox(height: 16),
-                  Text(
-                    'No violations found',
-                    style: TextStyle(
-                      fontSize: 18,
-                      color: _textColor,
-                    ),
-                  ),
-                ],
-              ),
-            )
+                ? Center(child: Text('No active violations found'))
                 : RefreshIndicator(
-              color: _primaryColor,
               onRefresh: fetchViolations,
               child: ListView.builder(
-                padding: EdgeInsets.symmetric(horizontal: 16),
                 itemCount: filteredViolations.length,
                 itemBuilder: (context, index) {
                   final violation = filteredViolations[index];
-                  return Card(
-                    margin: EdgeInsets.only(bottom: 16),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12)),
-                    elevation: 2,
-                    color: _cardColor,
-                    child: Padding(
-                      padding: EdgeInsets.all(16),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Text(
-                                violation['name'] ?? 'Unknown User',
-                                style: TextStyle(
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.bold,
-                                  color: _textColor,
-                                ),
-                              ),
-                              Container(
-                                padding: EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                                decoration: BoxDecoration(
-                                  color: getTypeColor(violation['type'] ?? 'low').withOpacity(0.2),
-                                  borderRadius: BorderRadius.circular(20),
-                                  border: Border.all(
-                                    color: getTypeColor(violation['type'] ?? 'low'),
-                                    width: 1,
-                                  ),
-                                ),
-                                child: Text(
-                                  (violation['type'] ?? 'low').toUpperCase(),
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.bold,
-                                    color: getTypeColor(violation['type'] ?? 'low'),
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                          SizedBox(height: 8),
-                          Text(
-                            violation['info'] ?? 'No details provided',
-                            style: TextStyle(color: _textColor),
-                          ),
-                          SizedBox(height: 12),
-                          Divider(height: 1, color: Colors.grey[300]),
-                          SizedBox(height: 12),
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Row(
-                                children: [
-                                  Icon(Icons.person_outline, size: 16, color: Colors.grey[600]),
-                                  SizedBox(width: 4),
-                                  Text(
-                                    violation['role'] ?? 'Unknown',
-                                    style: TextStyle(fontSize: 12, color: Colors.grey[600]),
-                                  ),
-                                ],
-                              ),
-                              Row(
-                                children: [
-                                  Icon(Icons.circle, size: 8, color: _primaryColor),
-                                  SizedBox(width: 4),
-                                  Text(
-                                    violation['status'] ?? 'Unknown',
-                                    style: TextStyle(fontSize: 12, color: _textColor),
-                                  ),
-                                ],
-                              ),
-                              ElevatedButton(
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: _primaryColor,
-                                  padding: EdgeInsets.symmetric(horizontal: 16),
-                                  shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(20)),
-                                ),
-                                onPressed: () => deleteViolation(violation['name']),
-                                child: Text(
-                                  'Resolve',
-                                  style: TextStyle(color: Colors.white),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
-                  );
+                  return _buildViolationCard(violation);
                 },
               ),
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildViolationCard(Map<String, dynamic> violation) {
+    return Card(
+      margin: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      elevation: 2,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Container(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Padding(
+          padding: EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    violation['name'] ?? 'Unknown',
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 18,
+                      color: Colors.black87,
+                    ),
+                  ),
+                  Container(
+                    padding: EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: getTypeColor(violation['type'] ?? 'other').withOpacity(0.2),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Text(
+                      (violation['type'] ?? 'other').toUpperCase(),
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: getTypeColor(violation['type'] ?? 'other'),
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              SizedBox(height: 12),
+              Text(
+                violation['info'] ?? 'No details',
+                style: TextStyle(
+                  color: Colors.grey[700],
+                  fontSize: 14,
+                ),
+              ),
+              SizedBox(height: 16),
+              Divider(height: 1, color: Colors.grey[200]),
+              SizedBox(height: 12),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Container(
+                    padding: EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: violation['status'] == 'pending'
+                          ? Colors.orange[50]
+                          : Colors.green[50],
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Text(
+                      'Status: ${violation['status'] ?? 'unknown'}',
+                      style: TextStyle(
+                        color: violation['status'] == 'pending'
+                            ? Colors.orange[800]
+                            : Colors.green[800],
+                        fontSize: 13,
+                      ),
+                    ),
+                  ),
+                  if (violation['status'] == 'pending')
+                    ElevatedButton(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: _primaryColor,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        padding: EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                      ),
+                      onPressed: () => resolveViolation(violation['name'], violation['id']),
+                      child: Text(
+                        'Resolve',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 14,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

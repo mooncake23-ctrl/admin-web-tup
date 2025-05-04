@@ -53,7 +53,6 @@ class _ParkingHistoryScreenState extends State<ParkingHistoryScreen> {
 
   void _initSocket() {
     try {
-      // Configure socket to connect to your server
       socket = IO.io('https://appfinity.vercel.app', <String, dynamic>{
         'transports': ['websocket'],
         'autoConnect': true,
@@ -61,17 +60,13 @@ class _ParkingHistoryScreenState extends State<ParkingHistoryScreen> {
 
       socket.onConnect((_) {
         print('Socket connected');
-        // Listen for parking updates
         socket.on('parking_update', (data) {
           print('Received parking update: $data');
-          // When we receive an update, refresh the history
           fetchParkingHistory();
         });
 
-        // Listen for specific history updates
         socket.on('history_update', (data) {
           print('Received history update: $data');
-          // Update the specific record if it exists, or add it
           setState(() {
             final index = parkingHistory.indexWhere((item) => item['id'] == data['id']);
             if (index != -1) {
@@ -114,8 +109,17 @@ class _ParkingHistoryScreenState extends State<ParkingHistoryScreen> {
       if (response.statusCode == 200) {
         final List<dynamic> data = json.decode(response.body);
         setState(() {
-          parkingHistory = data;
-          filteredHistory = data;
+          parkingHistory = data.map((item) {
+            // Convert status to entry/exit terminology
+            if (item['status'] == 'active') {
+              item['display_status'] = 'entry';
+            } if (_selectedStatus == 'exit')
+            {
+              item['display_status'] = 'exit';
+            }
+            return item;
+          }).toList();
+          filteredHistory = parkingHistory;
           isLoading = false;
         });
       } else {
@@ -132,27 +136,79 @@ class _ParkingHistoryScreenState extends State<ParkingHistoryScreen> {
     }
   }
 
+  Future<void> _deleteParkingHistory(String id) async {
+    try {
+      setState(() => isLoading = true);
+
+      final response = await http.delete(
+        Uri.https('appfinity.vercel.app', '/parking-history/delete/id/$id'),
+      );
+
+      if (response.statusCode == 200) {
+        setState(() {
+          parkingHistory.removeWhere((item) => item['id'].toString() == id);
+          filteredHistory.removeWhere((item) => item['id'].toString() == id);
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Record deleted successfully')),
+        );
+      } else {
+        throw Exception('Failed to delete record: ${response.statusCode}');
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error: ${e.toString()}')),
+      );
+    } finally {
+      setState(() => isLoading = false);
+    }
+  }
+
+  void _confirmDelete(String id) {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          backgroundColor: Colors.grey[100],
+          title: Text('Confirm Delete', style: TextStyle(color: Colors.black)),
+          content: Text('Are you sure you want to delete this parking record?',
+              style: TextStyle(color: Colors.black)),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: Text('Cancel', style: TextStyle(color: _primaryColor)),
+            ),
+            TextButton(
+              onPressed: () {
+                Navigator.pop(context);
+                _deleteParkingHistory(id);
+              },
+              child: Text('Delete', style: TextStyle(color: Colors.red)),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   Future<void> handleParkingEntry(String rfid, String slotName) async {
     try {
-      // 1. Call /update_slot_for_entry using RFID to update slot status
       final entryResponse = await http.post(
         Uri.https('appfinity.vercel.app', '/update_slot_for_entry/$rfid'),
       );
 
       if (entryResponse.statusCode == 200) {
-        // Directly use slotName
         final responseData = json.decode(entryResponse.body);
 
-        // 2. Add parking history for entry
         await _createParkingHistory({
           'rfid': rfid,
           'slotname': slotName,
           'status': 'active',
+          'display_status': 'entry',
           'info': 'User entered parking slot',
           'entry_time': DateTime.now().toIso8601String(),
         });
 
-        // 3. Emit socket event for real-time update
         socket.emit('parking_event', {
           'type': 'entry',
           'rfid': rfid,
@@ -174,7 +230,6 @@ class _ParkingHistoryScreenState extends State<ParkingHistoryScreen> {
 
   Future<void> handleParkingExit(String rfid) async {
     try {
-      // 1. Call /update_slot_for_exit using RFID to update slot status
       final exitResponse = await http.post(
         Uri.https('appfinity.vercel.app', '/update_slot_for_exit/$rfid'),
       );
@@ -183,7 +238,6 @@ class _ParkingHistoryScreenState extends State<ParkingHistoryScreen> {
         final responseData = json.decode(exitResponse.body);
         final slotName = responseData['slotname'];
 
-        // 2. Find the most recent active parking record for this RFID
         final activeRecords = parkingHistory.where(
                 (record) => record['rfid'] == rfid && record['status'] == 'active'
         ).toList();
@@ -191,17 +245,16 @@ class _ParkingHistoryScreenState extends State<ParkingHistoryScreen> {
         if (activeRecords.isNotEmpty) {
           final mostRecentRecord = activeRecords.last;
 
-          // 3. Create a new completed record with exit time
           await _createParkingHistory({
             'rfid': mostRecentRecord['rfid'],
             'slotname': slotName,
             'status': 'completed',
+            'display_status': 'exit',
             'info': 'User exited parking slot',
             'entry_time': mostRecentRecord['entry_time'],
             'exit_time': DateTime.now().toIso8601String(),
           });
 
-          // 4. Emit socket event for real-time update
           socket.emit('parking_event', {
             'type': 'exit',
             'rfid': rfid,
@@ -281,12 +334,13 @@ class _ParkingHistoryScreenState extends State<ParkingHistoryScreen> {
                   margin: EdgeInsets.symmetric(vertical: 4.0),
                   color: Colors.white,
                   child: ListTile(
-                    title: Text('Slot: ${history['slotname'] ?? '-'}', style: TextStyle(color: Colors.black)),
+                    title: Text('Slot: ${history['slotname'] ?? '-'}',
+                        style: TextStyle(color: Colors.black)),
                     subtitle: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          'Status: ${history['status'] ?? '-'}',
+                          'Type: ${history['display_status'] ?? history['status'] ?? '-'}',
                           style: TextStyle(
                             color: history['status'] == 'active'
                                 ? Colors.green
@@ -297,11 +351,14 @@ class _ParkingHistoryScreenState extends State<ParkingHistoryScreen> {
                           ),
                         ),
                         if (history['entry_time'] != null)
-                          Text('Entry: ${_formatTimestamp(history['entry_time'])}', style: TextStyle(color: Colors.black)),
+                          Text('Entry: ${_formatTimestamp(history['entry_time'])}',
+                              style: TextStyle(color: Colors.black)),
                         if (history['exit_time'] != null)
-                          Text('Exit: ${_formatTimestamp(history['exit_time'])}', style: TextStyle(color: Colors.black)),
+                          Text('Exit: ${_formatTimestamp(history['exit_time'])}',
+                              style: TextStyle(color: Colors.black)),
                         if (history['entry_time'] != null && history['exit_time'] != null)
-                          Text('Duration: ${_calculateDuration(history['entry_time'], history['exit_time'])}', style: TextStyle(color: Colors.black)),
+                          Text('Duration: ${_calculateDuration(history['entry_time'], history['exit_time'])}',
+                              style: TextStyle(color: Colors.black)),
                       ],
                     ),
                   ),
@@ -391,9 +448,9 @@ class _ParkingHistoryScreenState extends State<ParkingHistoryScreen> {
                   ),
                   Chip(
                     label: Text(
-                      _selectedStatus == 'all' ? 'All' : _selectedStatus,
-                      style: TextStyle(color: Colors.black),
-                    ),
+                        _selectedStatus == 'all' ? 'All' :
+                        _selectedStatus == 'active' ? 'Entry' : 'Exit',
+                        style: TextStyle(color: Colors.black)),
                     backgroundColor: _primaryColor,
                   ),
                 ],
@@ -425,7 +482,7 @@ class _ParkingHistoryScreenState extends State<ParkingHistoryScreen> {
                             style: TextStyle(color: Colors.black),
                           ),
                           Text(
-                            'Status: ${history['status'] ?? '-'}',
+                            'Type: ${history['display_status'] ?? history['status'] ?? '-'}',
                             style: TextStyle(
                               color: history['status'] == 'active'
                                   ? Colors.green
@@ -447,16 +504,22 @@ class _ParkingHistoryScreenState extends State<ParkingHistoryScreen> {
                             ),
                         ],
                       ),
-                      trailing: IconButton(
-                        icon: Icon(
-                          Icons.history,
-                          color: _primaryColor,
-                        ),
-                        onPressed: () {
-                          if (history['rfid'] != null) {
-                            _showUserHistory(history['rfid']);
-                          }
-                        },
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          IconButton(
+                            icon: Icon(Icons.history, color: _primaryColor),
+                            onPressed: () {
+                              if (history['rfid'] != null) {
+                                _showUserHistory(history['rfid']);
+                              }
+                            },
+                          ),
+                          IconButton(
+                            icon: Icon(Icons.delete, color: Colors.red),
+                            onPressed: () => _confirmDelete(history['id'].toString()),
+                          ),
+                        ],
                       ),
                       onTap: () {
                         _showHistoryDetails(history);
@@ -487,9 +550,18 @@ class _ParkingHistoryScreenState extends State<ParkingHistoryScreen> {
   String _formatTimestamp(String? timestamp) {
     if (timestamp == null) return 'N/A';
     try {
-      final dateTime = DateTime.parse(timestamp);
-      return '${dateTime.day}/${dateTime.month}/${dateTime.year} ${dateTime.hour}:${dateTime.minute}';
+      String normalizedTimestamp = timestamp;
+      if (!normalizedTimestamp.endsWith('Z')) {
+        normalizedTimestamp += 'Z';
+      }
+
+      DateTime dateTime = DateTime.parse(normalizedTimestamp).toLocal();
+
+      return '${dateTime.day}/${dateTime.month}/${dateTime.year} '
+          '${dateTime.hour.toString().padLeft(2, '0')}:'
+          '${dateTime.minute.toString().padLeft(2, '0')}';
     } catch (e) {
+      print('Error formatting timestamp "$timestamp": $e');
       return timestamp;
     }
   }
@@ -508,7 +580,7 @@ class _ParkingHistoryScreenState extends State<ParkingHistoryScreen> {
               children: [
                 _buildDetailRow('Name', history['name'] ?? 'Unknown'),
                 _buildDetailRow('Slot', history['slotname'] ?? '-'),
-                _buildDetailRow('Status', history['status'] ?? '-'),
+                _buildDetailRow('Type', history['display_status'] ?? history['status'] ?? '-'),
                 _buildDetailRow('Info', history['info'] ?? '-'),
                 if (history['entry_time'] != null)
                   _buildDetailRow('Entry Time', _formatTimestamp(history['entry_time'])),
@@ -524,6 +596,13 @@ class _ParkingHistoryScreenState extends State<ParkingHistoryScreen> {
             TextButton(
               onPressed: () => Navigator.pop(context),
               child: Text('Close', style: TextStyle(color: _primaryColor)),
+            ),
+            TextButton(
+              onPressed: () {
+                Navigator.pop(context);
+                _confirmDelete(history['id'].toString());
+              },
+              child: Text('Delete', style: TextStyle(color: Colors.red)),
             ),
           ],
         );
@@ -572,11 +651,11 @@ class _ParkingHistoryScreenState extends State<ParkingHistoryScreen> {
                   ),
                   DropdownMenuItem(
                     value: 'active',
-                    child: Text('Active', style: TextStyle(color: Colors.black)),
+                    child: Text('Entry', style: TextStyle(color: Colors.black)),
                   ),
                   DropdownMenuItem(
-                    value: 'completed',
-                    child: Text('Completed', style: TextStyle(color: Colors.black)),
+                    value: 'exit', // renamed from 'completed'
+                    child: Text('Exit', style: TextStyle(color: Colors.black)),
                   ),
                 ],
                 onChanged: (value) {
@@ -587,9 +666,19 @@ class _ParkingHistoryScreenState extends State<ParkingHistoryScreen> {
                   fetchParkingHistory();
                 },
               ),
+
               DropdownButtonFormField<String>(
                 value: _selectedSort,
-                decoration: InputDecoration(labelText: 'Sort by', labelStyle: TextStyle(color: Colors.black)),
+                decoration: InputDecoration(
+                  labelText: 'Sort by',
+                  labelStyle: TextStyle(color: Colors.black),
+                  filled: true,
+                  fillColor: Colors.white, // Light background color
+                  border: OutlineInputBorder(), // Optional: makes it more defined
+                ),
+                dropdownColor: Colors.white, // Dropdown background color
+                style: TextStyle(color: Colors.black), // Dropdown text color
+                iconEnabledColor: Colors.black, // Dropdown arrow icon color
                 items: [
                   DropdownMenuItem(
                     value: 'latest',
@@ -608,6 +697,7 @@ class _ParkingHistoryScreenState extends State<ParkingHistoryScreen> {
                   fetchParkingHistory();
                 },
               ),
+
               TextFormField(
                 initialValue: _limit,
                 decoration: InputDecoration(labelText: 'Limit', labelStyle: TextStyle(color: Colors.black)),

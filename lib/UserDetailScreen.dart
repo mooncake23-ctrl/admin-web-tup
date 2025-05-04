@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'package:flutter/services.dart'; // Added for clipboard functionality
 import 'EditUserScreen.dart';
+import 'package:flutter/services.dart';
 
 class UserDetailScreen extends StatefulWidget {
   final Map<String, dynamic> user;
@@ -118,6 +120,32 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
     });
   }
 
+  // Function to copy RFID to clipboard
+  Future<void> _copyRFIDToClipboard() async {
+    final rfid = widget.user['rfid']?.toString().trim();
+
+    if (rfid != null && rfid.isNotEmpty) {
+      await Clipboard.setData(ClipboardData(text: rfid));
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('RFID copied to clipboard'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+    } else {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('No RFID available to copy'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+    }
+  }
+
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -170,8 +198,34 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
                       userProfile?['id_number'] ?? "N/A"),
                   _buildDetailRow(Icons.email, 'Email',
                       widget.user['email'] ?? "N/A"),
-                  _buildDetailRow(Icons.credit_card, 'RFID',
-                      widget.user['rfid'] ?? "N/A"),
+                  // Modified RFID row to include copy button
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 8.0),
+                    child: Row(
+                      children: [
+                        Icon(Icons.credit_card, color: Color(0xFF1AA6B8), size: 28),
+                        SizedBox(width: 12),
+                        Text(
+                          'RFID:',
+                          style: TextStyle(
+                              fontWeight: FontWeight.bold, fontSize: 16, color: Color(0xFF1AA6B8)),
+                        ),
+                        SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            widget.user['rfid'] ?? "N/A",
+                            style: TextStyle(fontSize: 16, color: Colors.grey.shade700),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        IconButton(
+                          icon: Icon(Icons.content_copy, size: 20),
+                          onPressed: _copyRFIDToClipboard,
+                          tooltip: 'Copy RFID',
+                        ),
+                      ],
+                    ),
+                  ),
                   _buildDetailRow(
                       Icons.directions_car, 'Plate Number',
                       userProfile?['plate_number'] ?? "N/A"),
