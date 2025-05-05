@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
-import 'dart:typed_data'; // For Uint8List
+import 'package:flutter/foundation.dart';
+import 'package:flutter_web_frame/flutter_web_frame.dart';
+import 'dart:typed_data';
 import 'LoginScreen.dart';
 import 'DashboardScreen.dart';
 import 'UsersScreen.dart';
@@ -12,8 +14,17 @@ import 'CreateUserScreen.dart';
 import 'SignUpScreen.dart';
 import 'ContactUsScreen.dart';
 
+// Global navigator key for web navigation
+final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Initialize web-specific settings if running on web
+  if (kIsWeb) {
+    // You can add web-specific initializations here
+  }
+
   runApp(AdminApp());
 }
 
@@ -22,6 +33,7 @@ class AdminApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Admin Panel',
+      debugShowCheckedModeBanner: false,
       theme: ThemeData(
         brightness: Brightness.dark,
         primaryColor: Colors.blueAccent,
@@ -35,9 +47,25 @@ class AdminApp extends StatelessWidget {
           bodyMedium: TextStyle(color: Colors.white70),
         ),
       ),
-      debugShowCheckedModeBanner: false,
+
+      // Web-specific configurations
+      useInheritedMediaQuery: true,
+      navigatorKey: navigatorKey,
+      builder: (context, child) {
+        return kIsWeb
+            ? FlutterWebFrame(
+          maximumSize: Size(1920, 1080),
+          enabled: true,
+          builder: (context) => child!,
+        )
+            : child!;
+      },
+
+      // Routing configuration
       initialRoute: '/login',
       routes: _routes,
+
+      // Handle unknown routes (404)
       onUnknownRoute: (settings) => MaterialPageRoute(
         builder: (context) => Scaffold(
           appBar: AppBar(title: Text("Page Not Found")),
@@ -49,9 +77,24 @@ class AdminApp extends StatelessWidget {
           ),
         ),
       ),
+
+      // Handle web URL navigation
+      onGenerateRoute: (settings) {
+        if (kIsWeb) {
+          final routeBuilder = _routes[settings.name];
+          if (routeBuilder != null) {
+            return MaterialPageRoute(
+              builder: routeBuilder,
+              settings: settings,
+            );
+          }
+        }
+        return null;
+      },
     );
   }
 
+  // App routes
   static final Map<String, WidgetBuilder> _routes = {
     '/login': (context) => LoginScreen(),
     '/dashboard': (context) => DashboardScreen(),
@@ -66,4 +109,3 @@ class AdminApp extends StatelessWidget {
     '/contact_us': (context) => ContactUsScreen(),
   };
 }
-

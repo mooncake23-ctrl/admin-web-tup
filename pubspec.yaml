@@ -37,6 +37,8 @@ dependencies:
   flutter_staggered_animations: ^1.1.1
   socket_io_client: ^2.0.0
   cupertino_icons: ^1.0.8
+  flutter_web_frame: ^1.0.0
+  universal_html: ^2.2.0
 #  supabase_flutter: ^2.3.0
   #   supabase: ^2.3.0
   #   cached_network_image: ^3.2.3

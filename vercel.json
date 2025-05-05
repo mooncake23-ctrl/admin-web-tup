@@ -1,0 +1,65 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "build/web/**",
+      "use": "@vercel/static"
+    }
+  ],
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/login",
+      "dest": "/index.html"
+    },
+    {
+      "src": "/dashboard",
+      "dest": "/index.html"
+    },
+    {
+      "src": "/users",
+      "dest": "/index.html"
+    },
+    {
+      "src": "/notifications",
+      "dest": "/index.html"
+    },
+    {
+      "src": "/parking_history",
+      "dest": "/index.html"
+    },
+    {
+      "src": "/profiles",
+      "dest": "/index.html"
+    },
+    {
+      "src": "/stores",
+      "dest": "/index.html"
+    },
+    {
+      "src": "/violations",
+      "dest": "/index.html"
+    },
+    {
+      "src": "/create_user",
+      "dest": "/index.html"
+    },
+    {
+      "src": "/signup",
+      "dest": "/index.html"
+    },
+    {
+      "src": "/contact_us",
+      "dest": "/index.html"
+    },
+    {
+      "src": ".*",
+      "dest": "/index.html"
+    }
+  ]
+}
